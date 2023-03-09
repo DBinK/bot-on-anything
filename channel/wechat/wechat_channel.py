@@ -43,9 +43,20 @@ class WechatChannel(Channel):
     def handle(self, msg):
         logger.debug("[WX]receive msg: " + json.dumps(msg, ensure_ascii=False))
         from_user_id = msg['FromUserName']
+        content = msg['Text']
+
+        # 检测敏感词
+        sensitive_words_file = 'sensitive_words.txt'
+        if os.path.isfile(sensitive_words_file):
+            with open(sensitive_words_file, 'r', encoding='utf-8') as f:
+                sensitive_words = [word.strip() for word in f.readlines()]
+            for word in sensitive_words:
+                if word in content:
+                    self.send("你输入的内容包含敏感词汇", from_user_id)
+                    return
+
         to_user_id = msg['ToUserName']              # 接收人id
         other_user_id = msg['User']['UserName']     # 对手方id
-        content = msg['Text']
         match_prefix = self.check_prefix(content, channel_conf_val(const.WECHAT, 'single_chat_prefix'))
         if from_user_id == other_user_id and match_prefix is not None:
             # 好友向自己发送消息
@@ -71,34 +82,81 @@ class WechatChannel(Channel):
                 content = content.split(img_match_prefix, 1)[1].strip()
                 thread_pool.submit(self._do_send_img, content, to_user_id)
             else:
-                thread_pool.submit(self._do_send, content, to_user_id)
+                # 回复消息检测敏感词
+                reply_content = self.build_reply_content(content)
+                sensitive_words_file = 'sensitive_words.txt'
+                if os.path.isfile(sensitive_words_file):
+                    with open(sensitive_words_file, 'r', encoding='utf-8') as f:
+                        sensitive_words = [word.strip() for word in f.readlines()]
+                    for word in sensitive_words:
+                        if word in reply_content:
+                            self.send("请不要引导机器人做坏事", to_user_id)
+                            return
+
+                thread_pool.submit(self._do_send, reply_content, to_user_id)
 
 
     def handle_group(self, msg):
         logger.debug("[WX]receive group msg: " + json.dumps(msg, ensure_ascii=False))
-        group_name = msg['User'].get('NickName', None)
-        group_id = msg['User'].get('UserName', None)
-        if not group_name:
-            return ""
-        origin_content = msg['Content']
-        content = msg['Content']
-        content_list = content.split(' ', 1)
-        context_special_list = content.split('\u2005', 1)
-        if len(context_special_list) == 2:
-            content = context_special_list[1]
-        elif len(content_list) == 2:
-            content = content_list[1]
+        from_user_id = msg['FromUserName']
+        content = msg['Text']
 
-        match_prefix = (msg['IsAt'] and not channel_conf_val(const.WECHAT, "group_at_off", False)) or self.check_prefix(origin_content, channel_conf_val(const.WECHAT, 'group_chat_prefix')) \
-                       or self.check_contain(origin_content, channel_conf_val(const.WECHAT, 'group_chat_keyword'))
-        group_white_list = channel_conf_val(const.WECHAT, 'group_name_white_list')
-        if ('ALL_GROUP' in group_white_list or group_name in group_white_list or self.check_contain(group_name, channel_conf_val(const.WECHAT, 'group_name_keyword_white_list'))) and match_prefix:
+        # 检测敏感词
+        sensitive_words_file = 'sensitive_words.txt'
+        if os.path.isfile(sensitive_words_file):
+            with open(sensitive_words_file, 'r', encoding='utf-8') as f:
+                sensitive_words = [word.strip() for word in f.readlines()]
+            for word in sensitive_words:
+                if word in content:
+                    self.send("你输入的内容包含敏感词汇", from_user_id)
+                    return
+
+        to_group_id = msg['ToUserName']              # 群组id
+        match_prefix = self.check_prefix(content, channel_conf_val(const.WECHAT, 'group_chat_prefix'))
+        if match_prefix is not None:
+            # 自己在群组里发送消息
+            str_list = content.split(match_prefix, 1)
+            if len(str_list) == 2:
+                content = str_list[1].strip()
+
             img_match_prefix = self.check_prefix(content, channel_conf_val(const.WECHAT, 'image_create_prefix'))
             if img_match_prefix:
                 content = content.split(img_match_prefix, 1)[1].strip()
-                thread_pool.submit(self._do_send_img, content, group_id)
+                thread_pool.submit(self._do_send_img_group, content, to_group_id)
             else:
-                thread_pool.submit(self._do_send_group, content, msg)
+                # 回复消息检测敏感词
+                reply_content = self.build_reply_content(content)
+                sensitive_words_file = 'sensitive_words.txt'
+                if os.path.isfile(sensitive_words_file):
+                    with open(sensitive_words_file, 'r', encoding='utf-8') as f:
+                        sensitive_words = [word.strip() for word in f.readlines()]
+                    for word in sensitive_words:
+                        if word in reply_content:
+                            self.send("请不要引导机器人做坏事", to_group_id)
+                            return
+
+                thread_pool.submit(self._do_send_group, reply_content, to_group_id)
+        elif msg['isAt']:
+            # 机器人被@了
+            str_list = content.split('@' + msg['User']['NickName'], 1)
+            if len(str_list) == 2:
+                content = str_list[1].strip()
+            match_prefix = self.check_prefix(content, channel_conf_val(const.WECHAT, 'single_chat_prefix'))
+            if match_prefix is not None:
+                # 自己在群组里回复某人的消息
+                str_list = content.split(match_prefix, 1)
+                if len(str_list) == 2:
+                    content = str_list[1].strip()
+
+            img_match_prefix = self.check_prefix(content, channel_conf_val(const.WECHAT, 'image_create_prefix'))
+            if img_match_prefix:
+                content = content.split(img_match_prefix, 1)[1].strip()
+                at_user_id = msg['ActualUserName']
+                thread_pool.submit(self._do_send_img, content, at_user_id)
+            else:
+                at_user_id = msg['ActualUserName']
+                thread_pool.submit(self._do_send, content, at_user_id)
+
 
     def send(self, msg, receiver):
         logger.info('[WX] sendMsg={}, receiver={}'.format(msg, receiver))
