@@ -5,6 +5,7 @@ wechat channel
 """
 import itchat
 import json
+import os
 from itchat.content import *
 from channel.channel import Channel
 from concurrent.futures import ThreadPoolExecutor
